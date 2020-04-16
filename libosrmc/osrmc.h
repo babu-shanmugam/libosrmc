@@ -155,6 +155,7 @@ typedef struct osrmc_match_params* osrmc_match_params_t;
 typedef struct osrmc_route_response* osrmc_route_response_t;
 typedef struct osrmc_table_response* osrmc_table_response_t;
 
+typedef struct osrmc_json* osrmc_json_t;
 /* Service-specific callbacks */
 
 typedef void (*osrmc_waypoint_handler_t)(void* data, const char* name, float longitude, float latitude);
@@ -229,6 +230,7 @@ OSRMC_API osrmc_match_params_t osrmc_match_params_construct(osrmc_error_t* error
 OSRMC_API void osrmc_match_params_destruct(osrmc_match_params_t params);
 OSRMC_API void osrmc_match_params_add_timestamp(osrmc_match_params_t params, unsigned timestamp, osrmc_error_t* error);
 
+OSRMC_API PyObject *osrmc_json_to_pyobj(osrmc_json_t obj);
 #ifdef __cplusplus
 }
 #endif

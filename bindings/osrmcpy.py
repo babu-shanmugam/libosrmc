@@ -19,7 +19,8 @@ lib.osrmc_error_destruct.argtypes = [c.c_void_p]
 
 class osrmc_error(c.c_void_p):
     def __str__(self):
-        return lib.osrmc_error_message(self)
+        return lib.osrmc_error_message(self).decode('latin1')
+
     def __del__(self):
         lib.osrmc_error_destruct(self)
 
@@ -59,7 +60,7 @@ lib.osrmc_route_params_destruct.argtypes = [c.c_void_p]
 
 # Route
 lib.osrmc_route.restype = c.c_void_p
-lib.osrmc_route.argtypes = [c.c_void_p, c.c_void_p, c.c_void_p]
+lib.osrmc_route.argtypes = [c.c_void_p, c.py_object, c.c_void_p]
 lib.osrmc_route.errcheck = osrmc_error_errcheck
 
 lib.osrmc_route_response_destruct.restype = None
@@ -94,12 +95,15 @@ lib.osrmc_table_response_duration.restype = c.c_float
 lib.osrmc_table_response_duration.argtypes = [c.c_void_p, c.c_ulong, c.c_ulong, c.c_void_p]
 lib.osrmc_table_response_duration.errcheck = osrmc_error_errcheck
 
+# JSON
+lib.osrmc_json_to_pyobj.restype = c.py_object
+lib.osrmc_json_to_pyobj.argtypes = [c.c_void_p]
 
 # Python Library Interface
 
 @contextmanager
 def scoped_config(base_path):
-    config = lib.osrmc_config_construct(base_path, c.byref(osrmc_error()))
+    config = lib.osrmc_config_construct(base_path.encode('utf-8'), c.byref(osrmc_error()))
     yield config
     lib.osrmc_config_destruct(config)
 
@@ -139,12 +143,32 @@ Route = namedtuple('Route', 'distance duration')
 Table = list
 
 
+class Route:
+    def __init__(_, response):
+        _._response = response
+
+    def status(_):
+        return _._response['code'] == 'Ok'
+
+    @property
+    def routes(_):
+        return _._response['routes']
+
+    @property
+    def distance(_):
+        return sum([r['distance'] for r in _._response['routes']])
+
+    @property
+    def duration(_):
+        return sum([r['duration'] for r in _._response['routes']])
+
+
 class OSRM:
     def __init__(_, base_path):
         _.config = None
         _.osrm = None
 
-        _.config = lib.osrmc_config_construct(base_path, c.byref(osrmc_error()))
+        _.config = lib.osrmc_config_construct(base_path.encode('utf-8'), c.byref(osrmc_error()))
         assert _.config
 
         _.osrm = lib.osrmc_osrm_construct(_.config, c.byref(osrmc_error()))
@@ -156,20 +180,33 @@ class OSRM:
         if _.config:
             lib.osrmc_config_destruct(_.config)
 
-    def route(_, coordinates):
-        with scoped_route_params() as params:
-            assert params
+    def route(_, coordinates,
+              bearings=[], radiuses=[], generate_hints=False, hints=[],
+              alternatives=False, steps=False,
+              annotations=False,
+              geometries='polyline', overview='simplified',
+              continue_straight='default'):
+        # bearings is a list of tuples with (bearing, range)
+        # radiuses is list of floats
+        route = lib.osrmc_route(_.osrm, {
+            'coordinates': [(coordinate.longitude, coordinate.latitude)
+                            for coordinate in coordinates],
+            'bearings': bearings,
+            'radiuses': radiuses,
+            'generate_hints': generate_hints,
+            'hints': hints,
+            'alternatives': alternatives,
+            'annotations': annotations,
+            'geometries': geometries,
+            'overview': overview,
+            'continue_straight': continue_straight
+            }, c.byref(osrmc_error()))
+        if not route:
+            return
 
-            for coordinate in coordinates:
-                lib.osrmc_params_add_coordinate(params, coordinate.longitude, coordinate.latitude, c.byref(osrmc_error()))
-
-            with scoped_route(_.osrm, params) as route:
-                if route:
-                    distance = lib.osrmc_route_response_distance(route, c.byref(osrmc_error()))
-                    duration = lib.osrmc_route_response_duration(route, c.byref(osrmc_error()))
-                    return Route(distance=distance, duration=duration)
-                else:
-                    return None
+        ret = lib.osrmc_json_to_pyobj(route)
+        lib.osrmc_route_response_destruct(route)
+        return Route(ret)
 
     def table(_, coordinates):
         with scoped_table_params() as params:

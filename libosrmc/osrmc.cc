@@ -3,6 +3,7 @@
 #include <utility>
 #include <string>
 #include <stdexcept>
+#include <Python.h>
 
 #include <osrm/coordinate.hpp>
 #include <osrm/engine_config.hpp>
@@ -16,6 +17,18 @@
 #include <osrm/storage_config.hpp>
 
 #include "osrmc.h"
+
+/*String definitions for python version compatability*/
+#if PY_MAJOR_VERSION == 2
+#define PY_AS_STR PyString_AsString
+#define PY_FROM_STR PyString_FromString
+#define PY_STRCMP(pyobj, strchar) strcmp(PyString_AsString(pyobj), strchar)
+#elif PY_MAJOR_VERSION == 3
+#define PY_STRCMP PyUnicode_CompareWithASCIIString
+#define PY_AS_STR PyUnicode_AsUTF8
+#define PY_FROM_STR PyUnicode_FromString
+#endif
+
 
 /* ABI stability */
 
@@ -85,6 +98,103 @@ osrmc_osrm_t osrmc_osrm_construct(osrmc_config_t config, osrmc_error_t* error) t
 
 void osrmc_osrm_destruct(osrmc_osrm_t osrm) { delete reinterpret_cast<osrm::OSRM*>(osrm); }
 
+void osrmc_base_params_update(osrm::engine::api::BaseParameters *params, PyObject *in) {
+    PyObject *coordinates = PyDict_GetItemString(in, "coordinates");
+    for (int i = 0; i < PyList_Size(coordinates); i++) {
+        PyObject *coordinate = PyList_GetItem(coordinates, i);
+        params->coordinates.emplace_back(
+             std::move(osrm::util::FloatLongitude{
+                       PyFloat_AS_DOUBLE(PyTuple_GetItem(coordinate, 0))}),
+             std::move(osrm::util::FloatLatitude{
+                       PyFloat_AS_DOUBLE(PyTuple_GetItem(coordinate, 1))}));
+    }
+    PyObject *bearing_str = PY_FROM_STR("bearings");
+    if (PyDict_Contains(in, bearing_str) == 1) {
+        PyObject *bearings = PyDict_GetItem(in, bearing_str);
+        for (int i = 0; i < PyList_Size(bearings); i++) {
+            PyObject *bearing = PyList_GetItem(bearings, i);
+            osrm::engine::Bearing bearing_typed{
+                static_cast<short>(PyLong_AsLong(PyTuple_GetItem(bearing, 0))),
+                static_cast<short>(PyLong_AsLong(PyTuple_GetItem(bearing, 1)))};
+            params->bearings.emplace_back(std::move(bearing_typed));
+        }
+    }
+    PyObject *radiuses_str = PY_FROM_STR("radiuses");
+    if (PyDict_Contains(in, radiuses_str) == 1) {
+        PyObject *radiuses = PyDict_GetItem(in, radiuses_str);
+        for (int i = 0; i < PyList_Size(radiuses); i++) {
+            params->radiuses.emplace_back(
+                (float)PyFloat_AsDouble(PyList_GetItem(radiuses, i)));
+        }
+    }
+    if (PyDict_Contains(in, PY_FROM_STR("generate_hints")) == 1) {
+        params->generate_hints = (Py_True == PyDict_GetItemString(in, "generate_hints"));
+    }
+    if (PyDict_Contains(in, PY_FROM_STR("hints")) == 1) {
+        PyObject *hints = PyDict_GetItemString(in, "hints");
+        for (int i = 0; i < PyList_Size(hints); i++) {
+            params->hints.emplace_back(
+                osrm::engine::Hint::FromBase64(PY_AS_STR(PyList_GetItem(hints, i))));
+        }
+    }
+}
+
+void osrmc_route_params_update(osrm::engine::api::RouteParameters *params, PyObject *in) {
+    osrmc_base_params_update(params, in);
+    if (PyDict_Contains(in, PY_FROM_STR("alternatives")) == 1) {
+        params->alternatives = (Py_True == PyDict_GetItemString(in, "alternatives"));
+    }
+    if (PyDict_Contains(in, PY_FROM_STR("steps")) == 1) {
+        params->steps = (Py_True == PyDict_GetItemString(in, "steps"));
+    }
+    if (PyDict_Contains(in, PY_FROM_STR("annotations")) == 1) {
+        PyObject *annotations = PyDict_GetItemString(in, "annotations");
+        params->annotations = true;
+        if (annotations == Py_False) {
+            params->annotations_type = osrm::engine::api::RouteParameters::AnnotationsType::None;
+            params->annotations = false;
+        } else if (annotations == Py_True)
+            params->annotations_type = osrm::engine::api::RouteParameters::AnnotationsType::All;
+        else if (!PY_STRCMP(annotations, "nodes"))
+            params->annotations_type = osrm::engine::api::RouteParameters::AnnotationsType::Nodes;
+        else if (!PY_STRCMP(annotations, "distance"))
+            params->annotations_type = osrm::engine::api::RouteParameters::AnnotationsType::Distance;
+        else if (!PY_STRCMP(annotations, "duration"))
+            params->annotations_type = osrm::engine::api::RouteParameters::AnnotationsType::Duration;
+        else if (!PY_STRCMP(annotations, "datasources"))
+            params->annotations_type = osrm::engine::api::RouteParameters::AnnotationsType::Datasources;
+        else if (!PY_STRCMP(annotations, "weight"))
+            params->annotations_type = osrm::engine::api::RouteParameters::AnnotationsType::Weight;
+        else if (!PY_STRCMP(annotations, "speed"))
+            params->annotations_type = osrm::engine::api::RouteParameters::AnnotationsType::Speed;
+    }
+    if (PyDict_Contains(in, PY_FROM_STR("geometries")) == 1) {
+        PyObject *geometries = PyDict_GetItemString(in, "geometries");
+        if (!PY_STRCMP(geometries, "polyline"))
+            params->geometries = osrm::engine::api::RouteParameters::GeometriesType::Polyline;
+        else if (!PY_STRCMP(geometries, "polyline6"))
+            params->geometries = osrm::engine::api::RouteParameters::GeometriesType::Polyline6;
+        else if (!PY_STRCMP(geometries, "geojson"))
+            params->geometries = osrm::engine::api::RouteParameters::GeometriesType::GeoJSON;
+    }
+    if (PyDict_Contains(in, PY_FROM_STR("overview")) == 1) {
+        PyObject *overview = PyDict_GetItemString(in, "overview");
+        if (overview == Py_False)
+            params->overview = osrm::engine::api::RouteParameters::OverviewType::False;
+        else if (!PY_STRCMP(overview, "simplified"))
+            params->overview = osrm::engine::api::RouteParameters::OverviewType::Simplified;
+        else if (!PY_STRCMP(overview, "full"))
+            params->overview = osrm::engine::api::RouteParameters::OverviewType::Full;
+    }
+    if (PyDict_Contains(in, PY_FROM_STR("continue_straight")) == 1) {
+        PyObject *continue_straight = PyDict_GetItemString(in, "continue_straight");
+        if (continue_straight == Py_True)
+            params->continue_straight = true;
+        else if (continue_straight == Py_False)
+            params->continue_straight = false;
+    }
+}
+
 void osrmc_params_add_coordinate(osrmc_params_t params, float longitude, float latitude, osrmc_error_t* error) try {
   auto* params_typed = reinterpret_cast<osrm::engine::api::BaseParameters*>(params);
 
@@ -135,21 +245,28 @@ void osrmc_route_params_add_alternatives(osrmc_route_params_t params, int on) {
   params_typed->alternatives = on;
 }
 
-osrmc_route_response_t osrmc_route(osrmc_osrm_t osrm, osrmc_route_params_t params, osrmc_error_t* error) try {
-  auto* osrm_typed = reinterpret_cast<osrm::OSRM*>(osrm);
-  auto* params_typed = reinterpret_cast<osrm::RouteParameters*>(params);
-
+osrmc_route_response_t osrmc_route(osrmc_osrm_t osrm, osrmc_route_params_t params, osrmc_error_t* error) {
   auto* out = new osrm::json::Object;
-  const auto status = osrm_typed->Route(*params_typed, *out);
+  auto* params_cpp = new osrm::RouteParameters;
+  try {
+    auto* osrm_typed = reinterpret_cast<osrm::OSRM*>(osrm);
+    auto* params_input = reinterpret_cast<PyObject *>(params);
 
-  if (status == osrm::Status::Ok)
-    return reinterpret_cast<osrmc_route_response_t>(out);
+    osrmc_route_params_update(params_cpp, params_input);
+    const auto status = osrm_typed->Route(*params_cpp, *out);
+    delete params_cpp;
+    if (status == osrm::Status::Ok) {
+        return reinterpret_cast<osrmc_route_response_t>(out);
+    }
 
-  osrmc_error_from_json(*out, error);
-  return nullptr;
-} catch (const std::exception& e) {
-  osrmc_error_from_exception(e, error);
-  return nullptr;
+    osrmc_error_from_json(*out, error);
+    return nullptr;
+  } catch (const std::exception& e) {
+    delete out;
+    delete params_cpp;
+    osrmc_error_from_exception(e, error);
+    return nullptr;
+  }
 }
 
 void osrmc_route_with(osrmc_osrm_t osrm, osrmc_route_params_t params, osrmc_waypoint_handler_t handler, void* data,
@@ -375,4 +492,61 @@ void osrmc_match_params_add_timestamp(osrmc_match_params_t params, unsigned time
   params_typed->timestamps.emplace_back(timestamp);
 } catch (const std::exception& e) {
   osrmc_error_from_exception(e, error);
+}
+
+struct JSONObject {
+    explicit JSONObject(PyObject **out) : ret(out) {}
+
+    void operator()(const osrm::util::json::String &string) const {
+        *ret = PY_FROM_STR(string.value.c_str());
+    }
+    void operator()(const osrm::util::json::Number &number) const {
+        if (number.value - long(number.value)) {
+            *ret = PyFloat_FromDouble(number.value);
+        } else {
+            *ret = PyLong_FromDouble(number.value);
+        }
+    }
+    void operator()(const osrm::util::json::Object &object) const {
+        *ret = PyDict_New();
+        for (auto it = object.values.begin(), end = object.values.end(); it != end;) {
+            PyObject *r, *key;
+            mapbox::util::apply_visitor(JSONObject(&r), it->second);
+            key = PY_FROM_STR(it->first.c_str());
+            PyDict_SetItem(*ret, key, r);
+            ++it;
+        }
+    }
+    void operator()(const osrm::util::json::Array &array) const {
+        *ret = PyList_New(0);
+        for (auto it = array.values.cbegin(), end = array.values.cend(); it != end;) {
+            PyObject *r;
+            mapbox::util::apply_visitor(JSONObject(&r), *it);
+            PyList_Append(*ret, r);
+            ++it;
+        }
+    }
+    void operator()(const osrm::util::json::True &) const {
+        *ret = Py_True;
+    }
+    void operator()(const osrm::util::json::False &) const {
+        *ret = Py_False;
+    }
+    void operator()(const osrm::util::json::Null &) const {
+        *ret = Py_None;
+    }
+    private:
+    PyObject **ret;
+};
+
+PyObject *osrm_json_to_pyobj(osrm::util::json::Object& obj) {
+    osrm::util::json::Value value = obj;
+    PyObject *ret;
+    mapbox::util::apply_visitor(JSONObject(&ret), value);
+    return ret;
+}
+
+PyObject* osrmc_json_to_pyobj(osrmc_json_t obj) {
+    auto* out = reinterpret_cast<osrm::util::json::Object*>(obj);
+    return osrm_json_to_pyobj(*out);
 }
